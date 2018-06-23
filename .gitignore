@@ -1,2 +1,3 @@
 # ignore large file raw data
 rawdata/
+.Rproj.user
