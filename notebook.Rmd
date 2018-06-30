@@ -2,15 +2,214 @@
 title: "Gal Matan Analysis - 2018"
 output: html_notebook
 ---
-
+<!--
 This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
-
-Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
-
+Try executing this chunk by uncommenting this section and clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
 ```{r}
 plot(cars)
 ```
-
 Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
-
 When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file).
+-->
+
+Install (if necessary) and then load the [*VWPre*](https://cran.r-project.org/web/packages/VWPre/index.html) library.
+```{r}
+tryCatch(find.package("tidyverse"), finally= install.packages("tidyverse"))
+library("tidyverse")
+tryCatch(find.package("padr"), finally= install.packages("padr"))
+library("padr")
+tryCatch(find.package("lambda.r"), finally= install.packages("lambda.r"))
+library("lambda.r")
+
+tryCatch(find.package("VWPre"), finally= install.packages("VWPre"))
+library("VWPre")
+
+tryCatch(find.package("lme4"), finally= install.packages("lme4"))
+library("lme4")
+```
+
+Set your working directory, this should be the directory with your `<script_name>.R` scripts.
+```{r}
+# replace the string below with your desired working directory
+setwd("~/dev/CANlab-IDC/gal-matan-analysis/")
+```
+
+
+Next, load the Sample Report file you exported from the eyelink data viewer. (This may take a couple minutes if the file is large.)
+```{r}
+# replace the string below with the path to your desired data file
+VWdat <- read.table("rawdata/Sample_report_21_6_18_critl_period.txt", header = T, sep = "\t", na.strings = c(".", "NA"), fileEncoding = "ISO-8859-1", encoding = "UTF-8")
+```
+
+
+Run `prep_data` and remove the extra columns.
+
+```{r}
+dat0 <- prep_data(data = VWdat, Subject = "RECORDING_SESSION_LABEL", Item = "conditionxnoise")
+# if there are columns you want to keep, pass a char list to `rm_extra_DVcols#Keep` (e.g. `Keep = c("RIGHT_PUPIL_SIZE", "LEFT_PUPIL_SIZE")`)
+dat0 <- rm_extra_DVcols(dat0, Keep = NULL)
+```
+
+Convert the IA id columns to integers
+```{r}
+dat0$LEFT_INTEREST_AREA_ID <- as.integer(as.character(dat0$LEFT_INTEREST_AREA_ID))
+dat0$RIGHT_INTEREST_AREA_ID <- as.integer(as.character(dat0$RIGHT_INTEREST_AREA_ID))
+```
+
+If needed, recode the interest areas. If you are using the standard CANlab experiment for the Eyelink, you don't need to modify this input. After recoding the IAs run `check_ia` above again.
+```{r}
+dat0 <- recode_ia(data=dat0, IDs=c("0"="0", "1"="1", "2"="2", "3"="3",
+                                     "4"="4", "5"="0", "6"="0", "7"="0","8"="0", "9"="0"), 
+                    Labels=c(Bottom="Outside",Center="Outside",Distractor="Distractor", Filler_1="Filler_1",Filler_2="Filler_2",Left="Outside",       
+                             Right="Outside",Target="Target",Top="Outside"))
+```
+
+Next relabel the `NA`s and add a time column. The `Time` parameter of `create_time_series` is for the amount of time before the word onset that the critical period starts, (normally `200`).
+```{r}
+dat1 <- relabel_na(data = dat0, NoIA = 5)
+dat2 <- create_time_series(data = dat1, Adjust = 200)
+```
+
+```{r}
+check_time_series(data = dat2)
+check_msg_time(data = dat2, Msg = "WITHOUT_HA")
+check_eye_recording(data = dat2)
+```
+
+Clear unneeded environment variables
+```{r}
+remove(VWdat, dat0, dat1)
+```
+
+Load wm cap information & merge with dat2
+```{r}
+wmcaps <- read.csv("rawdata/WM_span.csv", header=T, col.names=c("Subject","wmcap"), colClasses = c("factor","factor"));
+wmcaps$Subject <- as.factor(sub("111","111t",as.character(wmcaps$Subject)));
+
+dat2 <- merge(x=dat2, y=wmcaps, by="Subject", all=T);
+levels(dat2$wmcap) <- c("low", "high");
+
+dat2 <- addTrialId(dat2)
+```
+
+All the stuff
+```{r}
+
+check_time_series(data = dat2);
+
+check_msg_time(data = dat2, Msg = "WITHOUT_HA");
+
+check_eye_recording(data = dat2);
+
+dat3 <- select_recorded_eye(data = dat2, Recording = "LandR", WhenLandR = "Right")
+
+check_samplingrate(dat3)
+
+ds_options(SamplingRate = 500);
+
+dat4 <- bin_prop(dat3, NoIA = 5, BinSize = 20, SamplingRate = 500)
+
+check_samplingrate(dat4);
+
+check_samples_per_bin(dat4);
+
+
+#dat4 <- rename_columns(dat4, Labels = c(IA1="Outside", IA1="Target", IA2="Filler_1", IA3="Distractor", IA4="Filler_2"))
+
+# rename wmcap factor
+levels(dat4$wmcap) <- c("low", "high");
+```
+
+Prep for glmer
+```{r}
+dat4_ot <- dat4;
+dat4_ot$TimeBin <- ((dat4$Time + 200) / 200) + 1;
+
+t <- poly((unique(dat4_ot$TimeBin)), 3);
+dat4_ot[,paste("ot", 1:3, sep="")] <- t[dat4_ot$TimeBin, 1:3];
+```
+
+Model design:
+```{}
+IA_1_P ~ (ot1+ot2+ot3)*condition
+  + (ot1+ot2+ot3)*load*wmcap
+  + (1+ot1+ot2+ot3 | Subject)
+  + (1+ot1 | Subject:condition)
+  + (1+ot1 | Subject:load)
+```
+
+select & rescale
+```{r}
+restricted_targfix_dat <- (
+  keepcritcorrect(dat4_pad, IncludeFiller = FALSE) %>%
+    select(., condition, wmcap, load, ot1, ot2, ot3, Subject, Time, starts_with("IA"))
+);
+
+scaled_targfix_dat <- (
+  restricted_targfix_pad %>%
+    mutate(.,
+        ot1 = scale(ot1, center = TRUE, scale = max(ot1, rm.na=TRUE)/100), 
+        ot2 = scale(ot2, center = TRUE, scale = max(ot2, rm.na=TRUE)/100), 
+        ot3 = scale(ot3, center = TRUE, scale = max(ot3, rm.na=TRUE)/100)
+    ) %>%
+    select(., condition, wmcap, load, ot1, ot2, ot3, Subject, Time, starts_with("IA"))
+);
+#summary(scaled_targfix_dat)
+```
+
+
+Run lmer 
+```{r}
+targetfix_m.reml.3 <- lmer(IA_1_P ~ (ot1+ot2+ot3)*condition
+  + (ot1+ot2+ot3)*load*wmcap
+  + (1+ot1+ot2+ot3 | Subject)
+  + (1+ot1 | Subject:condition)
+  + (1+ot1 | Subject:load),
+  control = lmerControl(optimizer="bobyqa"),
+  data=scaled_targfix_dat,
+  REML=T)
+targetfix_m.nm.3 <- lmer(IA_1_P ~ (ot1+ot2+ot3)*condition
+  + (ot1+ot2+ot3)*load*wmcap
+  + (1+ot1+ot2+ot3 | Subject)
+  + (1+ot1+ot2+ot3 | Subject/condition:load),
+  verbose=1,
+  control = lmerControl(optimizer="Nelder_Mead", optCtrl =list(maxfun=25000)),
+  data=scaled_targfix_dat,
+  REML=T)
+targetfix_m.full <- lmer(IA_1_P ~ (Time + I(Time^2) + I(Time^3))*condition
+  + (Time + I(Time^2) + I(Time^3))*load*wmcap
+  + (1+Time + I(Time^2) + I(Time^3) | Subject/condition:load),
+  verbose=1,
+  control = lmerControl(optimizer="Nelder_Mead", optCtrl =list(maxfun=25000)),
+  data=scaled_targfix_dat,
+  REML=T)
+```
+
+plot lmer 
+```{r}
+scaled_targfix_dat$mfit <- fitted(targetfix_m.nm.3);
+ggplot(scaled_targfix_dat, aes(Time, IA_1_P, color=wmcap)) + facet_wrap(~ load + condition) +
+  theme_minimal() + 
+  stat_summary(fun.y=mean, geom="point") +
+  stat_summary(aes(y=mfit), fun.y=mean, geom="line") +
+  labs(y="Fixation Proportion", x="Time since word onset (ms)") + 
+  scale_color_manual(values=c("red", "blue"))
+```
+```{r}
+dat2 %>%
+  addTrialId %>% addExcludeColumns %>%
+  exclude_filler %>% exclude_inc_dig %>% exclude_inc_sel %>%
+  filter(Subject == "122" & condition == "r") %>%
+  filter(Time <= 3000) %>%
+  pad_int("Time", -200, 3000, step=2, group="TRIAL_INDEX") %>%
+  group_by(TRIAL_INDEX) %>%
+  fill_by_function(fun=last) %>%
+  
+  ggplot(aes(Time, colors=as.factor(load))) +
+    theme_bw() +
+    facet_grid(RIGHT_INTEREST_AREA_ID~TRIAL_INDEX) +
+    geom_freqpoly() +
+    scale_color_manual(values=c("red", "blue")) +
+    xlim(-200, 3000)
+```
+
