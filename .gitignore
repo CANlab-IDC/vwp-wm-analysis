@@ -1,3 +1,4 @@
 # ignore large file raw data
 rawdata/
+mucmurray-data/
 .Rproj.user
