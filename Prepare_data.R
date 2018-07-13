@@ -75,12 +75,32 @@ colnames(dat6)
 dat4_correct <- keepcritcorrect(dat4, IncludeFiller = TRUE)
 #dat4_critcorrect <- keepcritcorrect(dat4, IncludeFiller = FALSE)
 
-TargetFixPForMcMurrayDat <- dat4_correct %>% 
+dat4_pad %>% 
+  addExcludeColumns %>%
+  exclude_inc_sel %>%
+  exclude_inc_dig %>%
+  exclude_kbd_sel %>%
+  exclude_bad_sub %>%
+  bin_prop(NoIA = 5, BinSize = 20, SamplingRate = 500) %>%
   # Select just the columns you want
-  select(., Subject, Item, starts_with("IA"), Event, TRIAL_INDEX, 
-         condition, target, distractor, filler_1, filler_2, load, critical, Time, IA_1_P) %>%
+  select(
+    Subject,
+    Item,
+    starts_with("IA"),
+    Event,
+    TRIAL_INDEX, 
+    condition,
+    target,
+    distractor,
+    filler_1,
+    filler_2,
+    load,
+    critical,
+    Time) %>%
   # Order the data by Subject, Trial, and Time
-  arrange(., Subject, TRIAL_INDEX, Time);
+  arrange(Subject, TRIAL_INDEX, Time) %T>%
+  (. %>% select(-IA_1_P, everything()) %>% write.csv(file="./mcmurray-data/target-correct-padded-data.csv")) %>%
+  (. %>% select(-IA_3_P, everything()) %>% write.csv(file="./mcmurray-data/competitor-correct-padded-data.csv"));
 
 CompetitorFixPForMcMurrayDat <- dat4_correct %>% 
   # Select just the columns you want

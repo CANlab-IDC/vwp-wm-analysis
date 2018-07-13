@@ -1,4 +1,7 @@
 # ignore large file raw data
 rawdata/
-mucmurray-data/
+mcmurray-data/
 .Rproj.user
+packrat/lib*/
+#*.RData
+.RData
